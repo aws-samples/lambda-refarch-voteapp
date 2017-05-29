@@ -25,7 +25,7 @@ exports.handler = function(event, context) {
         console.log(err);
         context.fail(err);
       } else {
-        var resp = new twilio.TwimlResponse();
+        var resp = new twilio.twiml.MessagingResponse();
         resp.message("Thank you for casting a vote for " + votedFor);
         context.done(null, [resp.toString()]);
         console.log("Vote received for %s", votedFor);
