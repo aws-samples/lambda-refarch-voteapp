@@ -69,7 +69,224 @@
   },
 
   "Resources": {
+    "ApiGatewayResource": {
+      "Type" : "AWS::ApiGateway::Resource",
+      "Properties": {
+        "RestApiId": { "Ref": "ApiGatewayRestApi" },
+        "ParentId": { "Fn::GetAtt": ["ApiGatewayRestApi", "RootResourceId"] },
+        "PathPart": "vote"
+      }
+    },
+    "CloudWatchRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [{
+            "Effect": "Allow",
+            "Principal": { "Service": [ "apigateway.amazonaws.com" ] },
+            "Action": "sts:AssumeRole"
+          }]
+        },
+        "Path": "/",
+        "ManagedPolicyArns": ["arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs"]
+      }
+    },
+    "ApiGatewayAccount": {
+      "Type" : "AWS::ApiGateway::Account",
+      "Properties" : {
+        "CloudWatchRoleArn": { "Fn::GetAtt": ["CloudWatchRole", "Arn"] }
+      }
+    },
+    "ApiGatewayDeployment": {
+      "Type": "AWS::ApiGateway::Deployment",
+      "Properties": {
+        "RestApiId": { "Ref": "ApiGatewayRestApi" },
+        "Description": "Production deployment",
+        "StageName": "production"
+      },
+      "DependsOn": [
+        "ApiGatewayRestApi",
+        "ApiGatewayResource",
+        "ApiGatewayMethod",
+        "ApiGatewayLambdaPermission"
+      ]
+    },
 
+    "ApiLoggableStage": {
+      "DependsOn" : ["ApiGatewayAccount"],
+      "Type": "AWS::ApiGateway::Stage",
+      "Properties": {
+        "DeploymentId": {"Ref": "ApiGatewayDeployment"},
+        "MethodSettings": [{
+          "DataTraceEnabled": true,
+          "HttpMethod": "*",
+          "LoggingLevel": "INFO",
+          "ResourcePath": "/*"
+        }],
+        "RestApiId": {"Ref": "ApiGatewayRestApi"},
+        "StageName": "prod_loggable"
+      }
+    },
+
+    "ApiGatewayRestApi": {
+      "Type": "AWS::ApiGateway::RestApi",
+      "Properties": {
+        "Description": "RESTful API endpoint",
+        "Name": {
+          "Fn::Join": [
+            "",
+            [
+              "ApiGatewayRestApi-",
+              { "Ref": "AWS::StackName" }
+            ]
+          ]
+        }
+      }
+    },
+    "ApiGatewayLambdaPermission": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "FunctionName" : { "Fn::GetAtt" : [ "LambdaVoteFunction", "Arn" ] },
+        "Action": "lambda:InvokeFunction",
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:aws:execute-api:",
+              { "Ref" : "AWS::Region" },
+              ":",
+              { "Ref" : "AWS::AccountId" },
+              ":",
+              { "Ref" : "ApiGatewayRestApi" },
+              "/*/POST/vote"
+            ]
+          ]
+        }
+      }
+    },
+    "ApiGatewayMethod": {
+      "DependsOn": ["LambdaVoteFunction","ApiGatewayRestApi"],
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "RestApiId": { "Ref": "ApiGatewayRestApi" },
+        "ResourceId": { "Ref": "ApiGatewayResource" },
+        "HttpMethod": "POST",
+        "AuthorizationType": "NONE",
+        "Integration": {
+          "Type": "AWS",
+          "IntegrationHttpMethod": "POST",
+          "Uri": {
+            "Fn::Join": [
+              "",
+              [
+                "arn:aws:apigateway:",
+                { "Ref" : "AWS::Region" },
+                ":lambda:path/2015-03-31/functions/",
+                { "Fn::GetAtt" : [ "LambdaVoteFunction", "Arn" ] },
+                "/invocations"
+              ]
+            ]
+          },
+          "RequestTemplates": {
+            "application/x-www-form-urlencoded": {"Fn::Join": [
+              "\n",
+              [
+                "## convert x-www-form-urlencoded to JSON",
+                "##",
+                "{",
+                "  #foreach( $token in $input.path('$').split('&') )",
+                "    #set( $keyVal = $token.split('=') )",
+                "    #set( $keyValSize = $keyVal.size() )",
+                "    #if( $keyValSize >= 1 )",
+                "      #set( $key = $util.urlDecode($keyVal[0]) )",
+                "      #if( $keyValSize >= 2 )",
+                "        #set( $val = $util.urlDecode($keyVal[1]) )",
+                "      #else",
+                "        #set( $val = '' )",
+                "      #end",
+                "      \"$key\": \"$val\"#if($foreach.hasNext),#end",
+                "    #end",
+                "  #end",
+                "}"
+              ]]
+            }
+          }
+        }
+      }
+    },
+    "OptionsApiMethod": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "RestApiId": { "Ref": "ApiGatewayRestApi" },
+        "ResourceId": { "Ref": "ApiGatewayResource" },
+        "HttpMethod": "OPTIONS",
+        "AuthorizationType": "NONE",
+        "Integration": {
+          "Type": "MOCK",
+          "RequestTemplates": {
+            "application/json": "{ \"statusCode\": 200 }"
+          },
+          "IntegrationResponses": [
+            {
+              "StatusCode": "200",
+              "ResponseParameters" : {
+                "method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'",
+                "method.response.header.Access-Control-Allow-Methods": "'POST,OPTIONS'",
+                "method.response.header.Access-Control-Allow-Origin": "'*'"
+              }
+            }
+          ]
+        },
+        "MethodResponses": [
+          {
+            "StatusCode": "200",
+            "ResponseParameters" : {
+              "method.response.header.Access-Control-Allow-Headers": true,
+              "method.response.header.Access-Control-Allow-Methods": true,
+              "method.response.header.Access-Control-Allow-Origin": true
+            }
+          }
+        ]
+      }
+    },        
+    "LambdaCallableFromApiGatewayPolicy": {
+        "Type": "AWS::IAM::ManagedPolicy",
+        "Properties": {
+            "Description": "Managed Policy for API Gateway Lambda function",
+            "Path": "/lambda/apigateway/",
+            "PolicyDocument": {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Action": [
+                            "logs:CreateLogGroup",
+                            "logs:CreateLogStream",
+                            "logs:PutLogEvents"
+                        ],
+                        "Resource": "arn:aws:logs:*:*:*"
+                    },
+                    {
+                        "Effect": "Allow",
+                        "Action": [
+                            "apigateway:*"
+                        ],
+                        "Resource": "*"
+                    },
+                    {
+                        "Effect": "Allow",
+                        "Action": [
+                            "iam:PassRole",
+                            "iam:GetServerCertificate"
+                        ],
+                        "Resource": "*"
+                    }
+                ]
+            }
+        }
+    },
     "DynamoDBTable": {
         "Type": "AWS::DynamoDB::Table",
         "Properties": {
@@ -173,7 +390,7 @@
               "Ref": "LambdaReceiveS3Key"
           }
         },
-        "Runtime": "nodejs",
+        "Runtime": "nodejs4.3",
         "Description": "Receives votes from Twilio and adds to DynamoDB",
         "Handler": "app.handler",
         "Role": {
@@ -197,7 +414,7 @@
             "Ref": "LambdaAggregateS3Key"
           }
         },
-        "Runtime": "nodejs",
+        "Runtime": "nodejs4.3",
         "Description": "Receives updated items from DynamoDB streams for aggregation",
         "Handler": "app.handler",
         "Role": {
